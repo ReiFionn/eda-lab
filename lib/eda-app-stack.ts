@@ -9,6 +9,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as source from "aws-cdk-lib/aws-lambda-event-sources";
 
 import { Construct } from "constructs";
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -28,6 +29,7 @@ export class EDAAppStack extends cdk.Stack {
       partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       tableName: "Imagess",
+      stream: dynamodb.StreamViewType.NEW_IMAGE
     });
 
 
@@ -47,21 +49,6 @@ export class EDAAppStack extends cdk.Stack {
 
     const newImageTopic = new sns.Topic(this, "NewImageTopic", {
       displayName: "New Image topic",
-    }); 
-
-    newImageTopic.addSubscription(
-      new subs.SqsSubscription(queue)
-    );
-
-    const mailerQ = new sqs.Queue(this, "mailer-q", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
-
-    newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
-
-    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
     }); 
 
   // Lambda functions
@@ -88,6 +75,12 @@ export class EDAAppStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(3),
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
+    
+    mailerFn.addEventSource(
+      new source.DynamoEventSource(imagesTable, {
+        startingPosition: lambda.StartingPosition.LATEST
+ })
+ )
 
     const rejectedImageFn = new lambdanode.NodejsFunction(
   this,
@@ -129,7 +122,7 @@ export class EDAAppStack extends cdk.Stack {
      });
 
          newImageTopic.addSubscription(
-      new subs.SqsSubscription(imageProcessQueue, {
+      new subs.SqsSubscription(queue, {
         filterPolicyWithMessageBody: {
           Records: sns.FilterOrPolicy.policy({
             s3: sns.FilterOrPolicy.policy({
@@ -148,33 +141,12 @@ export class EDAAppStack extends cdk.Stack {
       })
  );
 
-    newImageTopic.addSubscription(
-      new subs.SqsSubscription(mailerQ, {
-        filterPolicyWithMessageBody: {
-          Records: sns.FilterOrPolicy.policy({
-            s3: sns.FilterOrPolicy.policy({
-              object: sns.FilterOrPolicy.policy({
-                key: sns.FilterOrPolicy.filter(
-                  sns.SubscriptionFilter.stringFilter({
-                    matchPrefixes: ["image"],
-                  })
-                ),
-              }),
-            }),
-           }),
-         },
-        rawMessageDelivery: true,
-      })
- );
-
 const rejectedImageEventSource = new events.SqsEventSource(dlq, {
   batchSize: 5,
   maxBatchingWindow: cdk.Duration.seconds(10),
 });
 
 rejectedImageFn.addEventSource(rejectedImageEventSource)
-
-    mailerFn.addEventSource(newImageMailEventSource);
 
     mailerFn.addToRolePolicy(
       new iam.PolicyStatement({
